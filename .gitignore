@@ -1,0 +1,46 @@
+# Java编译文件
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Maven
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE文件
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# Excel导出文件（测试用）
+*.xlsx
+*.xls
+
+# 日志文件
+*.log
+logs/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+output.txt
+compile_result.txt
+run_output.txt
+compile.log
+
+# WorkBuddy工作目录
+.workbuddy/
