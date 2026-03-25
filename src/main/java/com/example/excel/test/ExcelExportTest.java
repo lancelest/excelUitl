@@ -3,15 +3,15 @@ package com.example.excel.test;
 import com.example.excel.config.*;
 import com.example.excel.model.User;
 import com.example.excel.utils.ExcelExportUtils;
-import org.apache.poi.ss.usermodel.BorderStyle;
-import org.apache.poi.ss.usermodel.HorizontalAlignment;
 import org.apache.poi.ss.usermodel.IndexedColors;
-import org.apache.poi.ss.usermodel.VerticalAlignment;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
 
 /**
  * Excel导出测试类
@@ -25,10 +25,10 @@ public class ExcelExportTest {
         System.out.println("========== Excel导出工具测试 ==========\n");
 
         // 测试1：基础多级表头导出
-//        exportExcel();
+        exportExcel();
 
         // 测试2：StyleProvider 条件样式示例
-        testStyleProvider();
+//        testStyleProvider();
 
         System.out.println("========================================");
     }
@@ -43,12 +43,12 @@ public class ExcelExportTest {
 
             // 2. 使用样式模板定义表头样式：红色背景、白色字体、加粗
             HeaderConfig header1 = new HeaderConfig()
-                    .addColumnNames("序号", "基本信息", "基本信息", "基本信息", "基本信息", "绩效数据", "绩效数据", "绩效数据", "绩效数据", "备注")
+                    .addColumnNames("序号", "基本信息", "", "", "", "绩效数据", "", "", "", "备注")
                     .setStyleConfig(StyleTemplate.HEADER.toStyleConfig())
                     .addMergeRegion(0, 1, 0, 0)   // 第1列合并第1-2行
                     .addMergeRegion(0, 0, 1, 4)   // 第2-5列合并（基本信息）
-                    .addMergeRegion(0, 0, 5, 8)   // 第6-9列合并（绩效数据）
-                    .addMergeRegion(0, 1, 9, 9);  // 第10列合并第1-2行
+                    .addMergeRegion(0, 0, 5, 8) ;  // 第6-9列合并（绩效数据）
+                    //.addMergeRegion(0, 1, 9, 9);  // 第10列合并第1-2行
 
             // 3. 配置二级表头（第2行）
             HeaderConfig header2 = new HeaderConfig()
@@ -173,7 +173,7 @@ SheetConfig<User> sheet1 = new SheetConfig<User>()
                     return StyleTemplate.DATA.toStyleConfig();
                 });
 
-            // ========== 场景3：技术部且满意度 > 0.9 → 紫色高亮（多字段判断）==========
+            // ========== 场景3：满意度 > 0.9 → 紫色高亮（多字段判断）==========
             ColumnConfig satisfactionColumn = new ColumnConfig()
                 .setFieldName("satisfaction")
                 .setWidth(12)

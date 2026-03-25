@@ -53,6 +53,12 @@ public class ExcelExportUtils {
     private static final String STYLE_HEADER = "header_";
     private static final String STYLE_DATA = "data_";
 
+    /**
+     * Method 缓存：key = "全限定类名#methodName"，value = Method 对象
+     * 避免每行每列都重复调用 clazz.getMethod()，对字段多的实体类性能提升显著
+     */
+    private static final Map<String, Method> METHOD_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+
     // ==================== 公共API方法 ====================
 
     /**
@@ -303,12 +309,16 @@ public class ExcelExportUtils {
                 continue;
             }
 
+            // 预处理：将合并区域内的非空值自动归位到 startCol
+            // 这样无论用户把文字写在合并区域的哪个位置，都能正确显示
+            List<String> normalizedNames = normalizeMergeRegionValues(columnNames, headerConfig.getMergeRegions());
+
             CellStyle style = createCellStyle(workbook, headerConfig.getStyleConfig(),
                 styleCache, STYLE_HEADER + level);
 
-            for (int col = 0; col < columnNames.size(); col++) {
+            for (int col = 0; col < normalizedNames.size(); col++) {
                 Cell cell = row.createCell(col);
-                String name = columnNames.get(col);
+                String name = normalizedNames.get(col);
                 if (StringUtils.isNotBlank(name)) {
                     cell.setCellValue(name);
                 }
@@ -324,6 +334,66 @@ public class ExcelExportUtils {
         }
 
         return headers.size();
+    }
+
+    /**
+     * 将合并区域内的非空值归位到 startCol
+     * <p>
+     * 解决用户随意填写合并区域内文字位置的问题。
+     * 扫描每个合并区域 [startCol, endCol]，找到其中第一个非空值，
+     * 将其移到 startCol，区域内其他位置置为空。
+     * 未被任何合并区域覆盖的列保持不变。
+     * </p>
+     *
+     * <p>示例：</p>
+     * <pre>
+     * 合并 col1~col4，原始：["序号", "", "", "基本信息", "", "绩效数据", ...]
+     *                                             ↑col3随便写的
+     * 处理后：            ["序号", "基本信息", "", "", "", "绩效数据", ...]
+     *                              ↑自动归位到col1
+     * </pre>
+     */
+    private static List<String> normalizeMergeRegionValues(List<String> columnNames,
+                                                            List<HeaderConfig.MergeRegion> mergeRegions) {
+        // 复制一份，避免修改原始数据
+        List<String> result = new ArrayList<>(columnNames);
+
+        if (CollectionUtils.isEmpty(mergeRegions)) {
+            return result;
+        }
+
+        for (HeaderConfig.MergeRegion region : mergeRegions) {
+            // 只处理同行合并（startRow == endRow == 0，即列合并）
+            if (region.getStartRow() != region.getEndRow()) {
+                continue;
+            }
+            int startCol = region.getStartCol();
+            int endCol = region.getEndCol();
+            if (startCol >= endCol) {
+                continue; // 单列，不需要处理
+            }
+
+            // 找到区域内第一个非空值
+            String foundValue = null;
+            for (int col = startCol; col <= endCol && col < result.size(); col++) {
+                String v = result.get(col);
+                if (StringUtils.isNotBlank(v)) {
+                    foundValue = v;
+                    break;
+                }
+            }
+
+            if (foundValue == null) {
+                continue; // 整个区域都是空，不处理
+            }
+
+            // 将非空值归位到 startCol，区域内其余位置清空
+            for (int col = startCol; col <= endCol && col < result.size(); col++) {
+                result.set(col, col == startCol ? foundValue : "");
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -456,24 +526,37 @@ public class ExcelExportUtils {
                 return ((Map<?, ?>) data).get(fieldName);
             }
 
-            // 实体类：优先尝试getter方法
+            // 实体类：优先尝试getter方法，结果缓存到 METHOD_CACHE 避免重复查找
             Class<?> clazz = data.getClass();
-            String getterName = "get" + capitalize(fieldName);
-            String isGetterName = "is" + capitalize(fieldName);
+            String cacheKeyGet = clazz.getName() + "#get" + capitalize(fieldName);
+            String cacheKeyIs  = clazz.getName() + "#is"  + capitalize(fieldName);
 
-            try {
-                Method method = clazz.getMethod(getterName);
-                method.setAccessible(true);
-                return method.invoke(data);
-            } catch (NoSuchMethodException e) {
+            Method method = METHOD_CACHE.get(cacheKeyGet);
+            if (method == null) {
+                // 缓存未命中，尝试 getXxx
                 try {
-                    Method method = clazz.getMethod(isGetterName);
+                    method = clazz.getMethod("get" + capitalize(fieldName));
                     method.setAccessible(true);
-                    return method.invoke(data);
-                } catch (NoSuchMethodException ex) {
-                    return getFieldByReflection(data, fieldName, clazz, row, col);
+                    METHOD_CACHE.put(cacheKeyGet, method);
+                } catch (NoSuchMethodException e) {
+                    // 尝试 isXxx（布尔型）
+                    try {
+                        method = clazz.getMethod("is" + capitalize(fieldName));
+                        method.setAccessible(true);
+                        // 用 cacheKeyGet 存储，后续同一字段直接命中
+                        METHOD_CACHE.put(cacheKeyGet, method);
+                    } catch (NoSuchMethodException ex) {
+                        // getter 都没有，回退到字段直接访问，用特殊标记避免重复查找
+                        METHOD_CACHE.put(cacheKeyGet, null); // null 表示"无getter，用字段反射"
+                    }
                 }
             }
+
+            if (method != null) {
+                return method.invoke(data);
+            }
+            // method == null（缓存了"无getter"标记），直接走字段反射
+            return getFieldByReflection(data, fieldName, clazz, row, col);
         } catch (ExcelExportException e) {
             throw e;
         } catch (Exception e) {
@@ -484,25 +567,30 @@ public class ExcelExportUtils {
     }
 
     /**
-     * 通过反射获取字段值
+     * Field 缓存：key = "全限定类名#fieldName"，value = Field 对象
+     */
+    private static final Map<String, Field> FIELD_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 通过反射获取字段值（无 getter 时的降级方案）
+     * Field 对象会缓存，避免每次调用 getDeclaredField()
      */
     private static Object getFieldByReflection(Object data, String fieldName, Class<?> clazz, int row, int col) {
-        try {
-            Field field = clazz.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            // 尝试覆盖模块系统的访问限制
+        String cacheKey = clazz.getName() + "#field#" + fieldName;
+        Field field = FIELD_CACHE.get(cacheKey);
+        if (field == null) {
             try {
-                java.lang.reflect.Field modifiersField = Field.class.getDeclaredField("modifiers");
-                modifiersField.setAccessible(true);
-                modifiersField.setInt(field, field.getModifiers() & ~java.lang.reflect.Modifier.FINAL);
-            } catch (Exception e) {
-                // 忽略修改失败，继续尝试访问
+                field = clazz.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                FIELD_CACHE.put(cacheKey, field);
+            } catch (NoSuchFieldException e) {
+                throw new ExcelExportException(
+                    String.format("第%d行第%d列字段【%s】不存在于类【%s】中", row + 1, col + 1, fieldName, clazz.getName()),
+                    "FIELD_NOT_FOUND", e);
             }
+        }
+        try {
             return field.get(data);
-        } catch (NoSuchFieldException e) {
-            throw new ExcelExportException(
-                String.format("第%d行第%d列字段【%s】不存在于类【%s】中", row + 1, col + 1, fieldName, clazz.getName()),
-                "FIELD_NOT_FOUND", e);
         } catch (IllegalAccessException e) {
             throw new ExcelExportException(
                 String.format("第%d行第%d列字段【%s】访问权限不足", row + 1, col + 1, fieldName),
@@ -777,6 +865,14 @@ public class ExcelExportUtils {
 
     /**
      * 应用列宽
+     * <p>列宽取以下三者的最大值：
+     * <ol>
+     *   <li>ColumnConfig 中配置的固定宽度</li>
+     *   <li>所有表头行中该列文字的换算宽度</li>
+     *   <li>最小保底宽度 5</li>
+     * </ol>
+     * 这样可以避免表头文字被截断。
+     * </p>
      */
     private static void applyColumnWidths(SXSSFSheet sheet, SheetConfig<?> config) {
         List<ColumnConfig> columns = config.getColumnConfigs();
@@ -784,15 +880,83 @@ public class ExcelExportUtils {
             return;
         }
 
+        // 预先计算每列表头文字所需的最小宽度（单位：字符数）
+        int[] headerMinWidths = calcHeaderMinWidths(config);
+
         for (int i = 0; i < columns.size(); i++) {
             ColumnConfig col = columns.get(i);
             if (col.isHidden()) {
                 sheet.setColumnHidden(i, true);
                 continue;
             }
-            int width = Math.max(col.getWidth(), 5);
+            // 取配置宽度与表头文字宽度的最大值，再与最小值 5 比较
+            int headerWidth = (i < headerMinWidths.length) ? headerMinWidths[i] : 0;
+            int width = Math.max(Math.max(col.getWidth(), headerWidth), 5);
             sheet.setColumnWidth(i, width * 256);
         }
+    }
+
+    /**
+     * 计算所有表头行每列所需的最小列宽（字符数）
+     * <p>中文字符按 2 个半角字符宽度计算，英文/数字按 1 个字符宽度计算，
+     * 再加 2 个字符的左右 padding。</p>
+     *
+     * @param config Sheet 配置
+     * @return 每列最小宽度数组（字符数）
+     */
+    private static int[] calcHeaderMinWidths(SheetConfig<?> config) {
+        List<HeaderConfig> headers = config.getHeaders();
+        int colCount = config.getColumnConfigs().size();
+        int[] minWidths = new int[colCount];
+
+        if (CollectionUtils.isEmpty(headers)) {
+            return minWidths;
+        }
+
+        for (HeaderConfig headerConfig : headers) {
+            List<String> columnNames = headerConfig.getColumnNames();
+            if (CollectionUtils.isEmpty(columnNames)) {
+                continue;
+            }
+            for (int col = 0; col < columnNames.size() && col < colCount; col++) {
+                String name = columnNames.get(col);
+                if (StringUtils.isBlank(name)) {
+                    continue;
+                }
+                int charWidth = measureTextWidth(name);
+                // 加上 padding（左右各1字符）
+                int needed = charWidth + 2;
+                if (needed > minWidths[col]) {
+                    minWidths[col] = needed;
+                }
+            }
+        }
+        return minWidths;
+    }
+
+    /**
+     * 估算文字显示宽度（半角字符单位）
+     * <p>中文/全角字符宽度按 2 计算，ASCII 字符按 1 计算。</p>
+     */
+    private static int measureTextWidth(String text) {
+        if (StringUtils.isBlank(text)) {
+            return 0;
+        }
+        int width = 0;
+        for (char c : text.toCharArray()) {
+            // 中文、全角标点、CJK 字符等宽度为 2
+            if (c >= '\u2E80' && c <= '\uFE4F'   // CJK 部首/笔画/兼容
+                    || c >= '\uFF00' && c <= '\uFFEF'  // 全角字符
+                    || c >= '\u4E00' && c <= '\u9FFF'  // 常用汉字
+                    || c >= '\u3400' && c <= '\u4DBF'  // 扩展汉字A
+//                    || c >= '\u20000' && c <= '\u2A6DF' // 扩展汉字B（代理对，近似处理）
+            ) {
+                width += 2;
+            } else {
+                width += 1;
+            }
+        }
+        return width;
     }
 
     // ==================== 工具方法 ====================
