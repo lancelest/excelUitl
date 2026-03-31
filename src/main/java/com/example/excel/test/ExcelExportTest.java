@@ -25,10 +25,13 @@ public class ExcelExportTest {
         System.out.println("========== Excel导出工具测试 ==========\n");
 
         // 测试1：基础多级表头导出
-        exportExcel();
+
 
         // 测试2：StyleProvider 条件样式示例
 //        testStyleProvider();
+
+        // 测试3：图表导出（柱状图）
+        testChartExport();
 
         System.out.println("========================================");
     }
@@ -262,6 +265,100 @@ SheetConfig<User> sheet1 = new SheetConfig<User>()
 
         } catch (Exception e) {
             System.err.println("  ✗ StyleProvider 测试失败：" + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * 测试图表导出
+     * 演示：在员工数据下方自动生成绩效评分 + 薪资柱状图
+     * - X轴：部门（department 字段）
+     * - Y轴系列1：绩效评分（performanceScore）
+     * - Y轴系列2：项目数（projectCount）
+     * - 标签旋转 45°，显示数据标签，自动位置
+     */
+    private static void testChartExport() {
+        System.out.println("  开始测试：图表导出");
+        try {
+            // 1. 准备数据（20条，覆盖多个部门）
+            List<User> dataList = generateUserData(20);
+
+            // 2. 图表配置
+            ChartConfig chartConfig = new ChartConfig()
+                    .setTitle("员工绩效概览")
+                    .setCategoryColumn("name")           // X轴用姓名
+                    .addSeries("performanceScore", "绩效评分")
+                    .addSeries("projectCount", "项目数")
+                    .setShowDataLabel(true)
+                    .setCategoryAxisRotation(45)          // X轴标签旋转45°
+                    .setCategoryAxisTitle("员工姓名")
+                    .setValueAxisTitle("数值")
+                    .setLegendPosition(ChartConfig.LegendPosition.BOTTOM)
+                    // 系列颜色：蓝色 + 橙色
+                    .setSeriesColors(Arrays.asList("4472C4", "ED7D31"))
+                    .setGapRows(2);
+
+            // 3. 列配置（与 exportExcel 保持一致的字段）
+            List<ColumnConfig> columns = new ArrayList<>();
+            columns.add(new ColumnConfig().setFieldName("seq").setWidth(8)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("name").setWidth(12)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("department").setWidth(12)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("position").setWidth(12)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("hireDate").setWidth(14)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("performanceScore").setWidth(12)
+                    .setNumberFormat("0.00")
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("projectCount").setWidth(10)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("satisfaction").setWidth(10)
+                    .setNumberFormat("0.0%")
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("salary").setWidth(12)
+                    .setNumberFormat("#,##0")
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("remark").setWidth(15)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+
+            // 4. 表头（单级，简洁）
+            HeaderConfig header = new HeaderConfig()
+                    .addColumnNames("序号", "姓名", "部门", "职位", "入职日期",
+                            "绩效评分", "项目数", "满意度", "薪资", "备注")
+                    .setStyleConfig(StyleTemplate.HEADER.toStyleConfig());
+
+            // 5. Sheet配置，挂上 chartConfig
+            SheetConfig<User> sheet = new SheetConfig<User>()
+                    .setSheetName("员工绩效图表")
+                    .setHeaders(Arrays.asList(header))
+                    .setColumnConfigs(columns)
+                    .setDataList(dataList)
+                    .setFreezeRow(2)
+                    .setDefaultDataStyle(StyleTemplate.DATA.toStyleConfig())
+                    .setBatchSize(50)
+                    .setChartConfig(chartConfig);   // ← 关键：设置图表配置
+
+            // 6. 导出
+            File file = new File("D:\\excelData\\员工绩效图表.xlsx");
+            File parent = file.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            try (OutputStream os = new FileOutputStream(file)) {
+                ExcelExportUtils.export(os, sheet);
+            }
+
+            System.out.println("  ✓ 图表导出成功，文件：" + file.getAbsolutePath());
+            System.out.println("    - X轴：员工姓名（旋转45°）");
+            System.out.println("    - 系列1：绩效评分（蓝色）");
+            System.out.println("    - 系列2：项目数（橙色）");
+            System.out.println("    - 显示数据标签，图例在底部");
+
+        } catch (Exception e) {
+            System.err.println("  ✗ 图表测试失败：" + e.getMessage());
             e.printStackTrace();
         }
     }

@@ -51,6 +51,9 @@ public class SheetConfig<T> {
     // 默认数据行样式
     private CellStyleConfig defaultDataStyle;
 
+    // 图表配置（为 null 则不生成图表）
+    private ChartConfig chartConfig;
+
     /**
      * 添加列配置
      */

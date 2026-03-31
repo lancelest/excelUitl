@@ -5,12 +5,9 @@ import com.example.excel.exception.ExcelExportException;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.usermodel.XSSFCellStyle;
-import org.apache.poi.xssf.usermodel.XSSFColor;
 import org.apache.poi.ss.util.CellRangeAddress;
-import org.apache.poi.xssf.streaming.SXSSFRow;
-import org.apache.poi.xssf.streaming.SXSSFSheet;
-import org.apache.poi.xssf.streaming.SXSSFWorkbook;
+import org.apache.poi.xssf.usermodel.*;
+
 
 import java.io.OutputStream;
 import java.io.IOException;
@@ -27,28 +24,25 @@ import java.util.*;
 
 /**
  * 企业级Excel导出工具类
- * 
+ *
  * 核心特性：
- * 1. 流式写入机制，支持百万级数据导出
+ * 1. 基于 XSSFWorkbook，支持图表生成
  * 2. 样式缓存策略，避免内存溢出
  * 3. 支持实体类和Map两种数据源
  * 4. 完善的中文异常处理
- * 5. 多级表头、斑马纹、渐变背景等企业级功能
- * 
+ * 5. 多级表头、条件样式、柱状图等企业级功能
+ *
  * @author Excel Export Tool
- * @version 3.0.0
+ * @version 4.0.0
  */
 public class ExcelExportUtils {
 
-    // 流式写入窗口大小
-    private static final int WINDOW_SIZE = 100;
-    
     // 最大行数限制
     private static final int MAX_ROWS = 1000000;
-    
+
     // 最大列数限制
     private static final int MAX_COLUMNS = 16384;
-    
+
     // 样式缓存键前缀
     private static final String STYLE_HEADER = "header_";
     private static final String STYLE_DATA = "data_";
@@ -194,11 +188,10 @@ public class ExcelExportUtils {
     // ==================== 核心导出逻辑 ====================
 
     /**
-     * 核心导出方法
+     * 核心导出方法（基于 XSSFWorkbook，支持图表）
      */
-    private static void exportToStream(OutputStream outputStream, List<SheetConfig<?>> sheetConfigs) 
+    private static void exportToStream(OutputStream outputStream, List<SheetConfig<?>> sheetConfigs)
             throws ExcelExportException {
-        // 参数校验
         if (outputStream == null) {
             throw new ExcelExportException("输出流不能为空", "NULL_OUTPUT_STREAM");
         }
@@ -206,16 +199,18 @@ public class ExcelExportUtils {
             throw new ExcelExportException("Sheet配置列表不能为空", "EMPTY_SHEET_CONFIG");
         }
 
-        try (SXSSFWorkbook workbook = new SXSSFWorkbook(WINDOW_SIZE)) {
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             Map<String, CellStyle> styleCache = new HashMap<>();
             DataFormat dataFormat = workbook.createDataFormat();
 
-            // 创建每个Sheet
+                // chartXmlMap: key=ZIP条目路径(如"xl/charts/chart1.xml"), value=完整XML字符串
+            // buildChart 返回已构建好的 chartSpaceXml，由 fixChartXmlInZip 做最终替换
+            Map<String, String> chartXmlMap = new java.util.LinkedHashMap<>();
             for (int i = 0; i < sheetConfigs.size(); i++) {
                 SheetConfig<?> config = sheetConfigs.get(i);
                 try {
                     validateSheetConfig(config, i);
-                    buildSheet(workbook, config, styleCache, dataFormat);
+                    buildSheet(workbook, config, styleCache, dataFormat, chartXmlMap);
                 } catch (ExcelExportException e) {
                     throw e;
                 } catch (Exception e) {
@@ -225,9 +220,17 @@ public class ExcelExportUtils {
                 }
             }
 
-            workbook.write(outputStream);
+            if (chartXmlMap.isEmpty()) {
+                // 无图表：直接写出
+                workbook.write(outputStream);
+            } else {
+                // 有图表：先写到内存，再用正确的 XML 替换 chart*.xml 和修复 drawing*.xml
+                java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                workbook.write(baos);
+                byte[] fixed = fixChartXmlInZip(baos.toByteArray(), chartXmlMap);
+                outputStream.write(fixed);
+            }
             outputStream.flush();
-            workbook.dispose();
         } catch (ExcelExportException e) {
             throw e;
         } catch (Exception e) {
@@ -258,10 +261,14 @@ public class ExcelExportUtils {
 
     /**
      * 构建单个Sheet
+     *
+     * @param chartXmlMap 用于收集图表 XML：key=ZIP条目路径(如"xl/charts/chart1.xml"),
+     *                    value=完整 chartSpaceXml 字符串。后续由 fixChartXmlInZip 做替换。
      */
-    private static void buildSheet(SXSSFWorkbook workbook, SheetConfig<?> config,
-                                   Map<String, CellStyle> styleCache, DataFormat dataFormat) {
-        SXSSFSheet sheet = workbook.createSheet(config.getSheetName());
+    private static void buildSheet(XSSFWorkbook workbook, SheetConfig<?> config,
+                                   Map<String, CellStyle> styleCache, DataFormat dataFormat,
+                                   Map<String, String> chartXmlMap) {
+        XSSFSheet sheet = workbook.createSheet(config.getSheetName());
         sheet.setDefaultRowHeight(config.getDefaultRowHeight());
         sheet.setDisplayGridlines(config.isDisplayGridlines());
 
@@ -273,8 +280,8 @@ public class ExcelExportUtils {
             sheet.createFreezePane(config.getFreezeCol(), config.getFreezeRow());
         }
 
-        // 写入数据
-        writeDataRows(sheet, config, headerRowCount, styleCache, workbook, dataFormat);
+        // 写入数据，返回实际数据结束行（含表头）
+        int lastDataRow = writeDataRows(sheet, config, headerRowCount, styleCache, workbook, dataFormat);
 
         // 设置列宽
         applyColumnWidths(sheet, config);
@@ -284,14 +291,32 @@ public class ExcelExportUtils {
             int lastCol = config.getColumnConfigs().size() - 1;
             sheet.setAutoFilter(new CellRangeAddress(0, headerRowCount - 1, 0, lastCol));
         }
+
+        // 生成图表（有 chartConfig 才执行）
+        if (config.getChartConfig() != null) {
+            // buildChart 返回构建好的 chartSpaceXml 字符串，同时通过 POI API 建立 drawing/chart 关系
+            // 真正的 XML 内容由 fixChartXmlInZip 在 ZIP 层面整体替换，绕开 POI 序列化的命名空间问题
+            String chartXml = buildChart(sheet, config, lastDataRow);
+            // 取该 sheet 下的 drawing，再取图表的 PackagePart 路径
+            XSSFDrawing drawing = sheet.getDrawingPatriarch();
+            if (drawing != null) {
+                for (XSSFChart c : drawing.getCharts()) {
+                    // partName 形如 /xl/charts/chart1.xml，去掉前导 /
+                    String partName = c.getPackagePart().getPartName().getName();
+                    if (partName.startsWith("/")) partName = partName.substring(1);
+                    chartXmlMap.put(partName, chartXml);
+                    break; // 每个 sheet 只有一个图表
+                }
+            }
+        }
     }
 
     /**
      * 构建表头
      * @return 表头行数
      */
-    private static int buildHeaders(SXSSFSheet sheet, SheetConfig<?> config,
-                                    Map<String, CellStyle> styleCache, SXSSFWorkbook workbook) {
+    private static int buildHeaders(XSSFSheet sheet, SheetConfig<?> config,
+                                    Map<String, CellStyle> styleCache, XSSFWorkbook workbook) {
         List<HeaderConfig> headers = config.getHeaders();
         if (CollectionUtils.isEmpty(headers)) {
             return 0;
@@ -300,7 +325,7 @@ public class ExcelExportUtils {
         int rowIndex = 0;
         for (int level = 0; level < headers.size(); level++) {
             HeaderConfig headerConfig = headers.get(level);
-            SXSSFRow row = sheet.createRow(rowIndex);
+            XSSFRow row = sheet.createRow(rowIndex);
             row.setHeight(headerConfig.getHeight());
 
             List<String> columnNames = headerConfig.getColumnNames();
@@ -399,7 +424,7 @@ public class ExcelExportUtils {
     /**
      * 应用合并区域
      */
-    private static void applyMergeRegions(SXSSFSheet sheet, List<HeaderConfig.MergeRegion> regions, int rowIndex) {
+    private static void applyMergeRegions(XSSFSheet sheet, List<HeaderConfig.MergeRegion> regions, int rowIndex) {
         if (CollectionUtils.isEmpty(regions)) {
             return;
         }
@@ -425,13 +450,15 @@ public class ExcelExportUtils {
 
     /**
      * 写入数据行
+     *
+     * @return 最后一个数据行的行号（0-based），无数据时返回 startRow - 1
      */
-    private static void writeDataRows(SXSSFSheet sheet, SheetConfig<?> config, int startRow,
-                                      Map<String, CellStyle> styleCache, SXSSFWorkbook workbook,
+    private static int writeDataRows(XSSFSheet sheet, SheetConfig<?> config, int startRow,
+                                      Map<String, CellStyle> styleCache, XSSFWorkbook workbook,
                                       DataFormat dataFormat) {
         List<?> dataList = config.getDataList();
         if (CollectionUtils.isEmpty(dataList)) {
-            return;
+            return startRow - 1;
         }
 
         List<ColumnConfig> columns = config.getColumnConfigs();
@@ -440,33 +467,26 @@ public class ExcelExportUtils {
 
         for (int i = 0; i < totalRows; i++) {
             int rowIndex = startRow + i;
-            
+
             if (rowIndex >= MAX_ROWS) {
                 throw new ExcelExportException(
                     String.format("数据行数超过Excel最大限制（%d行）", MAX_ROWS),
                     "ROW_EXCEED_LIMIT");
             }
 
-            SXSSFRow row = sheet.createRow(rowIndex);
+            XSSFRow row = sheet.createRow(rowIndex);
             Object data = dataList.get(i);
             fillRowData(row, data, columns, styleCache, workbook, dataFormat, rowIndex, config);
-
-            // 批量刷新释放内存
-            if ((i + 1) % batchSize == 0 && (i + 1) < totalRows) {
-                try {
-                    sheet.flushRows();
-                } catch (Exception e) {
-                    throw new ExcelExportException("刷新数据失败：" + e.getMessage(), "FLUSH_ERROR", e);
-                }
-            }
         }
+
+        return startRow + totalRows - 1;
     }
 
     /**
      * 填充单行数据
      */
-    private static void fillRowData(SXSSFRow row, Object data, List<ColumnConfig> columns,
-                                    Map<String, CellStyle> styleCache, SXSSFWorkbook workbook,
+    private static void fillRowData(XSSFRow row, Object data, List<ColumnConfig> columns,
+                                    Map<String, CellStyle> styleCache, XSSFWorkbook workbook,
                                     DataFormat dataFormat, int rowIndex, SheetConfig<?> config) {
         if (CollectionUtils.isEmpty(columns)) {
             return;
@@ -705,7 +725,7 @@ public class ExcelExportUtils {
      * @param rowData  整行数据（供 StyleProvider 访问其他字段）
      * @param rowIndex 当前数据行索引
      */
-    private static CellStyle resolveCellStyle(SXSSFWorkbook workbook, ColumnConfig colConfig,
+    private static CellStyle resolveCellStyle(XSSFWorkbook workbook, ColumnConfig colConfig,
                                               Map<String, CellStyle> styleCache, SheetConfig<?> sheetConfig,
                                               Object value, Object rowData, int rowIndex) {
         // 1. 动态样式优先（StyleProvider）
@@ -743,7 +763,7 @@ public class ExcelExportUtils {
      * 创建或获取缓存样式
      * <p>使用样式指纹机制,相同样式的配置会复用同一个Style对象</p>
      */
-    private static CellStyle createCellStyle(SXSSFWorkbook workbook, CellStyleConfig config,
+    private static CellStyle createCellStyle(XSSFWorkbook workbook, CellStyleConfig config,
                                              Map<String, CellStyle> styleCache, String cacheKey) {
         if (config == null) {
             return null;
@@ -874,7 +894,7 @@ public class ExcelExportUtils {
      * 这样可以避免表头文字被截断。
      * </p>
      */
-    private static void applyColumnWidths(SXSSFSheet sheet, SheetConfig<?> config) {
+    private static void applyColumnWidths(XSSFSheet sheet, SheetConfig<?> config) {
         List<ColumnConfig> columns = config.getColumnConfigs();
         if (CollectionUtils.isEmpty(columns)) {
             return;
@@ -959,11 +979,381 @@ public class ExcelExportUtils {
         return width;
     }
 
-    // ==================== 工具方法 ====================
+    // ==================== 图表生成 ====================
 
     /**
-     * 首字母大写
+     * 在数据结束行下方生成柱状图的 POI 骨架（建立 drawing/chart 关系），
+     * 并返回完整的、符合 OOXML Schema 的 chartSpace XML 字符串。
+     * <p>
+     * 真正的 chart XML 内容由 {@code fixChartXmlInZip} 在 ZIP 层面整体替换，
+     * 从而彻底绕开 POI / XMLBeans 序列化带来的命名空间丢失问题。
+     * </p>
+     *
+     * @return 完整 chartSpaceXml 字符串
      */
+    private static String buildChart(XSSFSheet sheet, SheetConfig<?> config, int lastDataRow) {
+        ChartConfig chartConfig = config.getChartConfig();
+        List<ColumnConfig> columns = config.getColumnConfigs();
+        int dataSize   = config.getDataList() == null ? 0 : config.getDataList().size();
+        int headerRows = config.getHeaders() == null ? 0 : config.getHeaders().size();
+
+        if (dataSize == 0) return "";
+
+        // ---- 找列索引 ----
+        int categoryColIdx = findColumnIndex(columns, chartConfig.getCategoryColumn());
+        if (categoryColIdx < 0) throw new ExcelExportException(
+            "ChartConfig.categoryColumn [" + chartConfig.getCategoryColumn() + "] 未找到",
+            "CHART_CATEGORY_NOT_FOUND");
+
+        List<Integer> seriesColIdxList = new ArrayList<>();
+        for (ChartConfig.SeriesConfig s : chartConfig.getSeriesList()) {
+            int idx = findColumnIndex(columns, s.getFieldName());
+            if (idx < 0) throw new ExcelExportException(
+                "series fieldName [" + s.getFieldName() + "] 未找到", "CHART_SERIES_NOT_FOUND");
+            seriesColIdxList.add(idx);
+        }
+
+        // ---- 图表锚点 ----
+        int chartStartRow   = lastDataRow + 1 + chartConfig.getGapRows();
+        int chartHeightRows = Math.min(Math.max((int)(dataSize * 0.6), 15), 40);
+        int chartWidthCols  = Math.min(Math.max(columns.size(), 10), 20);
+
+        XSSFDrawing      drawing   = sheet.createDrawingPatriarch();
+        XSSFClientAnchor anchor    = drawing.createAnchor(0, 0, 0, 0,
+            0, chartStartRow, chartWidthCols, chartStartRow + chartHeightRows);
+        XSSFChart        xssfChart = drawing.createChart(anchor);
+
+        // ---- 构建参数 ----
+        String sheetName    = escapeXmlAttr(sheet.getSheetName());
+        int    dataFirstRow = headerRows + 1;          // 1-based
+        int    dataLastRow  = lastDataRow + 1;          // 1-based
+
+        String catRange = buildCellRange(sheet.getSheetName(), dataFirstRow, dataLastRow,
+            categoryColIdx, categoryColIdx);
+
+        List<ChartConfig.SeriesConfig> seriesList   = chartConfig.getSeriesList();
+        List<String>                   seriesColors = chartConfig.getSeriesColors();
+
+        // ---- 构建系列 XML ----
+        StringBuilder seriesXml = new StringBuilder();
+        for (int s = 0; s < seriesList.size(); s++) {
+            ChartConfig.SeriesConfig sc  = seriesList.get(s);
+            int                      sci = seriesColIdxList.get(s);
+            String valRange = buildCellRange(sheet.getSheetName(), dataFirstRow, dataLastRow, sci, sci);
+
+            // 系列颜色（可选）
+            String spPrXml = "";
+            if (seriesColors != null && s < seriesColors.size()) {
+                String hex = seriesColors.get(s).replace("#", "").toUpperCase();
+                if (hex.length() == 6) {
+                    spPrXml = "<c:spPr><a:solidFill><a:srgbClr val=\"" + hex + "\"/></a:solidFill></c:spPr>";
+                }
+            }
+
+            // 数据标签（可选）
+            String dLblsXml = "";
+            if (chartConfig.isShowDataLabel()) {
+                dLblsXml = "<c:dLbls>"
+                    + "<c:showLegendKey val=\"0\"/>"
+                    + "<c:showVal val=\"1\"/>"
+                    + "<c:showCatName val=\"0\"/>"
+                    + "<c:showSerName val=\"0\"/>"
+                    + "<c:showPercent val=\"0\"/>"
+                    + "<c:showBubbleSize val=\"0\"/>"
+                    + "</c:dLbls>";
+            }
+
+            seriesXml.append("<c:ser>")
+                .append("<c:idx val=\"").append(s).append("\"/>")
+                .append("<c:order val=\"").append(s).append("\"/>")
+                .append("<c:tx><c:strRef><c:f>").append(escapeXml(sc.getSeriesName())).append("</c:f></c:strRef></c:tx>")
+                .append(spPrXml)
+                .append(dLblsXml)
+                .append("<c:cat><c:strRef><c:f>").append(escapeXml(catRange)).append("</c:f></c:strRef></c:cat>")
+                .append("<c:val><c:numRef><c:f>").append(escapeXml(valRange)).append("</c:f></c:numRef></c:val>")
+                .append("</c:ser>");
+        }
+
+        // ---- 图表标题（用 <c:rich> 富文本，而非 strRef） ----
+        String titleXml = "";
+        if (StringUtils.isNotBlank(chartConfig.getTitle())) {
+            titleXml = "<c:title>"
+                + "<c:tx><c:rich>"
+                + "<a:bodyPr/><a:lstStyle/>"
+                + "<a:p><a:r><a:t>" + escapeXml(chartConfig.getTitle()) + "</a:t></a:r></a:p>"
+                + "</c:rich></c:tx>"
+                + "<c:overlay val=\"0\"/>"
+                + "</c:title>";
+        }
+
+        // ---- X轴标题（用 <c:rich>） ----
+        String catAxisTitleXml = "";
+        if (StringUtils.isNotBlank(chartConfig.getCategoryAxisTitle())) {
+            catAxisTitleXml = "<c:title>"
+                + "<c:tx><c:rich>"
+                + "<a:bodyPr/><a:lstStyle/>"
+                + "<a:p><a:r><a:t>" + escapeXml(chartConfig.getCategoryAxisTitle()) + "</a:t></a:r></a:p>"
+                + "</c:rich></c:tx>"
+                + "<c:overlay val=\"0\"/>"
+                + "</c:title>";
+        }
+
+        // ---- Y轴标题（用 <c:rich>） ----
+        String valAxisTitleXml = "";
+        if (StringUtils.isNotBlank(chartConfig.getValueAxisTitle())) {
+            valAxisTitleXml = "<c:title>"
+                + "<c:tx><c:rich>"
+                + "<a:bodyPr rot=\"-5400000\" vert=\"horz\"/><a:lstStyle/>"
+                + "<a:p><a:r><a:t>" + escapeXml(chartConfig.getValueAxisTitle()) + "</a:t></a:r></a:p>"
+                + "</c:rich></c:tx>"
+                + "<c:overlay val=\"0\"/>"
+                + "</c:title>";
+        }
+
+        // ---- X轴标签旋转 ----
+        String catTxPrXml = "";
+        if (chartConfig.getCategoryAxisRotation() != null && chartConfig.getCategoryAxisRotation() != 0) {
+            int rot = -(chartConfig.getCategoryAxisRotation() * 60000);
+            catTxPrXml = "<c:txPr><a:bodyPr rot=\"" + rot + "\"/><a:lstStyle/><a:p><a:pPr/></a:p></c:txPr>";
+        }
+
+        // ---- Y轴范围 ----
+        String valScalingExtra = "";
+        if (chartConfig.getValueAxisMax() != null) {
+            valScalingExtra += "<c:max val=\"" + chartConfig.getValueAxisMax() + "\"/>";
+        }
+        if (chartConfig.getValueAxisMin() != null) {
+            valScalingExtra += "<c:min val=\"" + chartConfig.getValueAxisMin() + "\"/>";
+        }
+
+        // ---- Y轴刻度单位 ----
+        String valMajorUnitXml = "";
+        if (chartConfig.getValueAxisUnit() != null) {
+            valMajorUnitXml = "<c:majorUnit val=\"" + chartConfig.getValueAxisUnit() + "\"/>";
+        }
+
+        // ---- 图例 ----
+        String legendXml = "";
+        if (chartConfig.getLegendPosition() != ChartConfig.LegendPosition.NONE) {
+            String pos;
+            switch (chartConfig.getLegendPosition()) {
+                case TOP:   pos = "t"; break;
+                case LEFT:  pos = "l"; break;
+                case RIGHT: pos = "r"; break;
+                default:    pos = "b"; break;
+            }
+            legendXml = "<c:legend><c:legendPos val=\"" + pos + "\"/><c:overlay val=\"0\"/></c:legend>";
+        }
+
+        // ---- barDir & grouping ----
+        String barDir   = chartConfig.isBarChart() ? "bar" : "col";
+        String grouping = chartConfig.isStacked() ? "stacked" : "clustered";
+
+        // ---- 组装完整 chartSpace XML（严格按 OOXML Schema 元素顺序） ----
+        String chartSpaceXml =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+            + "<c:chartSpace"
+            + "  xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\""
+            + "  xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\""
+            + "  xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+            + "<c:date1904 val=\"0\"/>"
+            + "<c:chart>"
+            // title
+            + titleXml
+            // autoTitleDeleted
+            + "<c:autoTitleDeleted val=\"0\"/>"
+            // plotArea
+            + "<c:plotArea>"
+            + "<c:layout/>"
+            + "<c:barChart>"
+            + "<c:barDir val=\"" + barDir + "\"/>"
+            + "<c:grouping val=\"" + grouping + "\"/>"
+            + "<c:varyColors val=\"0\"/>"
+            + seriesXml
+            + "<c:axId val=\"1\"/>"
+            + "<c:axId val=\"2\"/>"
+            + "</c:barChart>"
+            // catAx — 严格按 CT_CatAx schema 顺序：axId,scaling,delete,axPos,title,
+            //          numFmt,majorTickMark,minorTickMark,tickLblPos,spPr,txPr,crossAx,crosses/crossesAt,auto,lblAlign,lblOffset
+            + "<c:catAx>"
+            + "<c:axId val=\"1\"/>"
+            + "<c:scaling><c:orientation val=\"minMax\"/></c:scaling>"
+            + "<c:delete val=\"0\"/>"
+            + "<c:axPos val=\"b\"/>"
+            + catAxisTitleXml
+            + "<c:numFmt formatCode=\"General\" sourceLinked=\"1\"/>"
+            + "<c:tickLblPos val=\"nextTo\"/>"
+            + catTxPrXml
+            + "<c:crossAx val=\"2\"/>"
+            + "<c:auto val=\"1\"/>"
+            + "<c:lblAlgn val=\"ctr\"/>"
+            + "<c:lblOffset val=\"100\"/>"
+            + "</c:catAx>"
+            // valAx — 严格按 CT_ValAx schema 顺序：axId,scaling,delete,axPos,title,
+            //          numFmt,majorGridlines,minorGridlines,majorTickMark,minorTickMark,tickLblPos,spPr,txPr,crossAx,crosses/crossesAt,crossBetween,majorUnit,minorUnit
+            + "<c:valAx>"
+            + "<c:axId val=\"2\"/>"
+            + "<c:scaling>"
+            + "<c:orientation val=\"minMax\"/>"
+            + valScalingExtra
+            + "</c:scaling>"
+            + "<c:delete val=\"0\"/>"
+            + "<c:axPos val=\"l\"/>"
+            + valAxisTitleXml
+            + "<c:numFmt formatCode=\"General\" sourceLinked=\"1\"/>"
+            + "<c:tickLblPos val=\"nextTo\"/>"
+            + "<c:crossAx val=\"1\"/>"
+            + "<c:crosses val=\"autoZero\"/>"
+            + "<c:crossBetween val=\"between\"/>"
+            + valMajorUnitXml
+            + "</c:valAx>"
+            + "</c:plotArea>"
+            // legend（在 plotArea 之后）
+            + legendXml
+            + "<c:plotVisOnly val=\"1\"/>"
+            + "<c:dispBlanksAs val=\"zero\"/>"
+            + "</c:chart>"
+            + "<c:printSettings>"
+            + "<c:headerFooter/>"
+            + "<c:pageMargins b=\"0.75\" l=\"0.7\" r=\"0.7\" t=\"0.75\" header=\"0.3\" footer=\"0.3\"/>"
+            + "<c:pageSetup/>"
+            + "</c:printSettings>"
+            + "</c:chartSpace>";
+
+        // ---- 用 POI API 建立 drawing / chart 关系（占位用，XML内容由ZIP后处理替换）----
+        // 注意：不调用 set()，让 POI 序列化出任意 chart1.xml 占位内容即可
+        // fixChartXmlInZip 会用 chartSpaceXml 完整替换该文件
+
+        return chartSpaceXml;
+    }
+
+    /**
+     * 构建 Excel 单元格范围引用字符串，例如：Sheet1!$B$2:$B$51
+     */
+    private static String buildCellRange(String sheetName, int firstRow1, int lastRow1,
+                                         int firstCol, int lastCol) {
+        String colFirst = columnIndexToLetter(firstCol);
+        String colLast  = columnIndexToLetter(lastCol);
+        return "'" + sheetName + "'!$" + colFirst + "$" + firstRow1
+             + ":$" + colLast + "$" + lastRow1;
+    }
+
+    /**
+     * 列索引（0-based）转 Excel 列字母，例如 0→A，25→Z，26→AA
+     */
+    private static String columnIndexToLetter(int colIdx) {
+        StringBuilder sb = new StringBuilder();
+        int n = colIdx + 1;
+        while (n > 0) {
+            int rem = (n - 1) % 26;
+            sb.insert(0, (char) ('A' + rem));
+            n = (n - 1) / 26;
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 在 ColumnConfig 列表中查找指定 fieldName 的列索引
+     */
+    private static int findColumnIndex(List<ColumnConfig> columns, String fieldName) {
+        if (CollectionUtils.isEmpty(columns) || StringUtils.isBlank(fieldName)) return -1;
+        for (int i = 0; i < columns.size(); i++) {
+            if (fieldName.equals(columns.get(i).getFieldName())) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * 十六进制颜色字符串转 byte 数组（RGB），如 "FF0000" → {-1, 0, 0}
+     */
+    private static byte[] hexToBytes(String hex) {
+        if (hex == null || hex.length() < 6) return new byte[]{0, 0, 0};
+        return new byte[]{
+            (byte) Integer.parseInt(hex.substring(0, 2), 16),
+            (byte) Integer.parseInt(hex.substring(2, 4), 16),
+            (byte) Integer.parseInt(hex.substring(4, 6), 16)
+        };
+    }
+
+    /**
+     * 修复 POI 生成的 xlsx ZIP 包里的图表问题。
+     * <p>
+     * 问题一：chart*.xml 由 POI 序列化时命名空间声明丢失，导致 Excel 无法解析。<br>
+     * 修复：直接用 {@code chartXmlMap} 中正确构建的 XML 字符串整体替换。<br><br>
+     * 问题二：drawing*.xml 中 POI 生成 {@code <xdr:cNvPr id="0">}，id=0 违反 OOXML 规范。<br>
+     * 修复：将 id="0" 替换为 id="1"。
+     * </p>
+     *
+     * @param xlsxBytes   workbook.write() 写出的原始字节
+     * @param chartXmlMap key=ZIP条目路径(如"xl/charts/chart1.xml"), value=正确的 chartSpaceXml
+     */
+    private static byte[] fixChartXmlInZip(byte[] xlsxBytes,
+                                            Map<String, String> chartXmlMap) throws IOException {
+        java.io.ByteArrayInputStream  bais = new java.io.ByteArrayInputStream(xlsxBytes);
+        java.io.ByteArrayOutputStream out  = new java.io.ByteArrayOutputStream();
+
+        try (java.util.zip.ZipInputStream  zin  = new java.util.zip.ZipInputStream(bais);
+             java.util.zip.ZipOutputStream zout = new java.util.zip.ZipOutputStream(out)) {
+
+            java.util.zip.ZipEntry entry;
+            byte[] buf = new byte[8192];
+
+            while ((entry = zin.getNextEntry()) != null) {
+                // 读取该条目的全部内容
+                java.io.ByteArrayOutputStream entryCopy = new java.io.ByteArrayOutputStream();
+                int len;
+                while ((len = zin.read(buf)) != -1) {
+                    entryCopy.write(buf, 0, len);
+                }
+                byte[] entryBytes = entryCopy.toByteArray();
+
+                String entryName = entry.getName();
+
+                // 对 chart*.xml 文件：整体替换为我们构建的正确 XML
+                if (entryName.matches("xl/charts/chart[0-9]*.xml")) {
+                    String correctXml = chartXmlMap.get(entryName);
+                    if (correctXml != null) {
+                        entryBytes = correctXml.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    }
+                }
+
+                // 对 drawing*.xml 文件：修复 cNvPr id="0" → id="1"
+                if (entryName.matches("xl/drawings/drawing[0-9]*.xml")) {
+                    String xml = new String(entryBytes, java.nio.charset.StandardCharsets.UTF_8);
+                    xml = xml.replaceAll("(<xdr:cNvPr\\s[^>]*\\bid)=\"0\"", "$1=\"1\"");
+                    entryBytes = xml.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                }
+
+                // 写入目标 ZIP
+                java.util.zip.ZipEntry newEntry = new java.util.zip.ZipEntry(entryName);
+                zout.putNextEntry(newEntry);
+                zout.write(entryBytes);
+                zout.closeEntry();
+            }
+        }
+        return out.toByteArray();
+    }
+
+    /**
+     * XML 内容转义：&amp; &lt; &gt; &quot; &apos;
+     */
+    private static String escapeXml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&apos;");
+    }
+
+    /**
+     * XML 属性值转义（用于 sheetName 等放进属性值的场景，同 escapeXml）
+     */
+    private static String escapeXmlAttr(String s) {
+        return escapeXml(s);
+    }
+
+    
     private static String capitalize(String str) {
         if (StringUtils.isBlank(str)) {
             return str;
