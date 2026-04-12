@@ -30,7 +30,7 @@ public class CellStyleConfig {
     private boolean bold = false;
 
     // 字体大小（单位：磅）
-    private short fontSize = 11;
+    private short fontSize = 10;
 
     // 字体名称
     private String fontName = "微软雅黑";

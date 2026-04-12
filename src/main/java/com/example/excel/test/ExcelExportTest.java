@@ -25,13 +25,16 @@ public class ExcelExportTest {
         System.out.println("========== Excel导出工具测试 ==========\n");
 
         // 测试1：基础多级表头导出
-
+//        exportExcel();
 
         // 测试2：StyleProvider 条件样式示例
 //        testStyleProvider();
 
         // 测试3：图表导出（柱状图）
-        testChartExport();
+//        testChartExport();
+
+        // 测试4：堆积柱图 & 百分比堆积柱图
+        testStackedChartExport();
 
         System.out.println("========================================");
     }
@@ -289,6 +292,7 @@ SheetConfig<User> sheet1 = new SheetConfig<User>()
                     .setCategoryColumn("name")           // X轴用姓名
                     .addSeries("performanceScore", "绩效评分")
                     .addSeries("projectCount", "项目数")
+                    .addSeries("satisfaction", "满意度")
                     .setShowDataLabel(true)
                     .setCategoryAxisRotation(45)          // X轴标签旋转45°
                     .setCategoryAxisTitle("员工姓名")
@@ -296,6 +300,7 @@ SheetConfig<User> sheet1 = new SheetConfig<User>()
                     .setLegendPosition(ChartConfig.LegendPosition.BOTTOM)
                     // 系列颜色：蓝色 + 橙色
                     .setSeriesColors(Arrays.asList("4472C4", "ED7D31"))
+                    .setFontSize(10)                     // 设置字体大小为12号
                     .setGapRows(2);
 
             // 3. 列配置（与 exportExcel 保持一致的字段）
@@ -342,7 +347,7 @@ SheetConfig<User> sheet1 = new SheetConfig<User>()
                     .setChartConfig(chartConfig);   // ← 关键：设置图表配置
 
             // 6. 导出
-            File file = new File("D:\\excelData\\员工绩效图表.xlsx");
+            File file = new File("D:\\excelData\\员工绩效-图表.xlsx");
             File parent = file.getParentFile();
             if (parent != null && !parent.exists()) {
                 parent.mkdirs();
@@ -364,6 +369,127 @@ SheetConfig<User> sheet1 = new SheetConfig<User>()
     }
 
     /**
+     * 测试堆积柱图 & 百分比堆积柱图
+     * 演示：同一份数据用三种分组方式导出，方便对比效果
+     *  - Sheet1：簇状柱图（CLUSTERED，原有默认）
+     *  - Sheet2：堆积柱图（STACKED）
+     *  - Sheet3：百分比堆积柱图（PERCENT_STACKED）
+     */
+    private static void testStackedChartExport() {
+        System.out.println("  开始测试：堆积柱图 & 百分比堆积柱图");
+        try {
+            List<User> dataList = generateUserData(15);
+
+            // ---- 公用列配置 ----
+            List<ColumnConfig> columns = new ArrayList<>();
+            columns.add(new ColumnConfig().setFieldName("seq").setWidth(8)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("name").setWidth(14)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("performanceScore").setWidth(12)
+                    .setNumberFormat("0.00")
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("projectCount").setWidth(10)
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+            columns.add(new ColumnConfig().setFieldName("satisfaction").setWidth(10)
+                    .setNumberFormat("0.0%")
+                    .setStyleConfig(StyleTemplate.DATA.toStyleConfig()));
+
+            HeaderConfig header = new HeaderConfig()
+                    .addColumnNames("序号", "姓名", "绩效评分", "项目数", "满意度")
+                    .setStyleConfig(StyleTemplate.HEADER.toStyleConfig());
+
+            // ---- 工厂：根据分组方式生成 ChartConfig ----
+            // Sheet1：簇状（默认，CLUSTERED）
+            ChartConfig clusteredChart = new ChartConfig()
+                    .setTitle("绩效概览 - 簇状柱图")
+                    .setCategoryColumn("name")
+                    .addSeries("performanceScore", "绩效评分")
+                    .addSeries("projectCount", "项目数")
+                    .setBarGrouping(ChartConfig.BarGrouping.CLUSTERED)
+                    .setCategoryAxisRotation(45)
+                    .setShowDataLabel(true)
+                    .setLegendPosition(ChartConfig.LegendPosition.BOTTOM)
+                    .setFontSize(10);
+
+            // Sheet2：堆积（STACKED）
+            ChartConfig stackedChart = new ChartConfig()
+                    .setTitle("绩效概览 - 堆积柱图")
+                    .setCategoryColumn("name")
+                    .addSeries("performanceScore", "绩效评分")
+                    .addSeries("projectCount", "项目数")
+                    .setBarGrouping(ChartConfig.BarGrouping.STACKED)
+                    .setCategoryAxisRotation(45)
+                    .setShowDataLabel(false)      // 堆积柱图数据标签容易重叠，关掉
+                    .setLegendPosition(ChartConfig.LegendPosition.BOTTOM)
+                    .setSeriesColors(Arrays.asList("4472C4", "ED7D31"))
+                    .setFontSize(10);
+
+            // Sheet3：百分比堆积（PERCENT_STACKED）
+            ChartConfig pctStackedChart = new ChartConfig()
+                    .setTitle("绩效概览 - 百分比堆积柱图")
+                    .setCategoryColumn("name")
+                    .addSeries("performanceScore", "绩效评分")
+                    .addSeries("projectCount", "项目数")
+                    .setBarGrouping(ChartConfig.BarGrouping.PERCENT_STACKED)
+                    .setCategoryAxisRotation(45)
+                    .setShowDataLabel(false)
+                    .setLegendPosition(ChartConfig.LegendPosition.RIGHT)
+                    .setSeriesColors(Arrays.asList("70AD47", "FFC000"))
+                    .setFontSize(10);
+
+            // ---- 三个 Sheet ----
+            SheetConfig<User> sheet1 = new SheetConfig<User>()
+                    .setSheetName("簇状柱图")
+                    .setHeaders(Arrays.asList(header))
+                    .setColumnConfigs(columns)
+                    .setDataList(dataList)
+                    .setFreezeRow(2)
+                    .setDefaultDataStyle(StyleTemplate.DATA.toStyleConfig())
+                    .setBatchSize(50)
+                    .setChartConfig(clusteredChart);
+
+            SheetConfig<User> sheet2 = new SheetConfig<User>()
+                    .setSheetName("堆积柱图")
+                    .setHeaders(Arrays.asList(header))
+                    .setColumnConfigs(columns)
+                    .setDataList(dataList)
+                    .setFreezeRow(2)
+                    .setDefaultDataStyle(StyleTemplate.DATA.toStyleConfig())
+                    .setBatchSize(50)
+                    .setChartConfig(stackedChart);
+
+            SheetConfig<User> sheet3 = new SheetConfig<User>()
+                    .setSheetName("百分比堆积")
+                    .setHeaders(Arrays.asList(header))
+                    .setColumnConfigs(columns)
+                    .setDataList(dataList)
+                    .setFreezeRow(2)
+                    .setDefaultDataStyle(StyleTemplate.DATA.toStyleConfig())
+                    .setBatchSize(50)
+                    .setChartConfig(pctStackedChart);
+
+            File file = new File("D:\\excelData\\堆积柱图对比.xlsx");
+            File parent = file.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            try (OutputStream os = new FileOutputStream(file)) {
+                ExcelExportUtils.export(os, sheet1, sheet2, sheet3);
+            }
+
+            System.out.println("  ✓ 堆积柱图导出成功，文件：" + file.getAbsolutePath());
+            System.out.println("    - Sheet1：簇状柱图（CLUSTERED）");
+            System.out.println("    - Sheet2：堆积柱图（STACKED）");
+            System.out.println("    - Sheet3：百分比堆积柱图（PERCENT_STACKED）");
+
+        } catch (Exception e) {
+            System.err.println("  ✗ 堆积柱图测试失败：" + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
      * 生成用户数据
      */
     private static List<User> generateUserData(int count) {
@@ -375,7 +501,7 @@ SheetConfig<User> sheet1 = new SheetConfig<User>()
         for (int i = 1; i <= count; i++) {
             User u = new User();
             u.setSeq(i);
-            u.setName("员工" + String.format("%03d", i));
+            u.setName("北京天坛医院员工" + String.format("%03d", i));
             u.setDepartment(depts[r.nextInt(depts.length)]);
             u.setPosition(positions[r.nextInt(positions.length)]);
             u.setHireDate(String.format("202%d-%02d-%02d", r.nextInt(6), r.nextInt(12) + 1, r.nextInt(28) + 1));

@@ -1080,7 +1080,8 @@ public class ExcelExportUtils {
             titleXml = "<c:title>"
                 + "<c:tx><c:rich>"
                 + "<a:bodyPr/><a:lstStyle/>"
-                + "<a:p><a:r><a:t>" + escapeXml(chartConfig.getTitle()) + "</a:t></a:r></a:p>"
+                + "<a:p><a:pPr><a:defRPr sz=\"" + (chartConfig.getFontSize() * 100) + "\"/></a:pPr>"
+                + "<a:r><a:rPr lang=\"en-US\"/><a:t>" + escapeXml(chartConfig.getTitle()) + "</a:t></a:r></a:p>"
                 + "</c:rich></c:tx>"
                 + "<c:overlay val=\"0\"/>"
                 + "</c:title>";
@@ -1092,7 +1093,8 @@ public class ExcelExportUtils {
             catAxisTitleXml = "<c:title>"
                 + "<c:tx><c:rich>"
                 + "<a:bodyPr/><a:lstStyle/>"
-                + "<a:p><a:r><a:t>" + escapeXml(chartConfig.getCategoryAxisTitle()) + "</a:t></a:r></a:p>"
+                + "<a:p><a:pPr><a:defRPr sz=\"" + (chartConfig.getFontSize() * 100) + "\"/></a:pPr>"
+                + "<a:r><a:rPr lang=\"en-US\"/><a:t>" + escapeXml(chartConfig.getCategoryAxisTitle()) + "</a:t></a:r></a:p>"
                 + "</c:rich></c:tx>"
                 + "<c:overlay val=\"0\"/>"
                 + "</c:title>";
@@ -1104,17 +1106,24 @@ public class ExcelExportUtils {
             valAxisTitleXml = "<c:title>"
                 + "<c:tx><c:rich>"
                 + "<a:bodyPr rot=\"-5400000\" vert=\"horz\"/><a:lstStyle/>"
-                + "<a:p><a:r><a:t>" + escapeXml(chartConfig.getValueAxisTitle()) + "</a:t></a:r></a:p>"
+                + "<a:p><a:pPr><a:defRPr sz=\"" + (chartConfig.getFontSize() * 100) + "\"/></a:pPr>"
+                + "<a:r><a:rPr lang=\"en-US\"/><a:t>" + escapeXml(chartConfig.getValueAxisTitle()) + "</a:t></a:r></a:p>"
                 + "</c:rich></c:tx>"
                 + "<c:overlay val=\"0\"/>"
                 + "</c:title>";
         }
 
-        // ---- X轴标签旋转 ----
+        // ---- X轴标签旋转和字体 ----
         String catTxPrXml = "";
+        int fontSize100 = chartConfig.getFontSize() * 100;
         if (chartConfig.getCategoryAxisRotation() != null && chartConfig.getCategoryAxisRotation() != 0) {
             int rot = -(chartConfig.getCategoryAxisRotation() * 60000);
-            catTxPrXml = "<c:txPr><a:bodyPr rot=\"" + rot + "\"/><a:lstStyle/><a:p><a:pPr/></a:p></c:txPr>";
+            catTxPrXml = "<c:txPr><a:bodyPr rot=\"" + rot + "\"/><a:lstStyle/>"
+                + "<a:p><a:pPr><a:defRPr sz=\"" + fontSize100 + "\"/></a:pPr></a:p></c:txPr>";
+        } else {
+            // 即使没有旋转，也需要设置字体大小
+            catTxPrXml = "<c:txPr><a:bodyPr/><a:lstStyle/>"
+                + "<a:p><a:pPr><a:defRPr sz=\"" + fontSize100 + "\"/></a:pPr></a:p></c:txPr>";
         }
 
         // ---- Y轴范围 ----
@@ -1132,6 +1141,19 @@ public class ExcelExportUtils {
             valMajorUnitXml = "<c:majorUnit val=\"" + chartConfig.getValueAxisUnit() + "\"/>";
         }
 
+        // ---- 主要网格线（Y轴水平线） ----
+        String majorGridlinesXml = "";
+        if (chartConfig.isShowMajorGridlines()) {
+            String color = chartConfig.getMajorGridlineColor();
+            if (color != null && color.length() == 6) {
+                majorGridlinesXml = "<c:majorGridlines><c:spPr><a:ln>"
+                    + "<a:solidFill><a:srgbClr val=\"" + color.toUpperCase() + "\"/></a:solidFill>"
+                    + "</a:ln></c:spPr></c:majorGridlines>";
+            } else {
+                majorGridlinesXml = "<c:majorGridlines/>";
+            }
+        }
+
         // ---- 图例 ----
         String legendXml = "";
         if (chartConfig.getLegendPosition() != ChartConfig.LegendPosition.NONE) {
@@ -1142,12 +1164,25 @@ public class ExcelExportUtils {
                 case RIGHT: pos = "r"; break;
                 default:    pos = "b"; break;
             }
-            legendXml = "<c:legend><c:legendPos val=\"" + pos + "\"/><c:overlay val=\"0\"/></c:legend>";
+            legendXml = "<c:legend><c:legendPos val=\"" + pos + "\"/><c:overlay val=\"0\"/>"
+                + "<c:txPr><a:bodyPr/><a:lstStyle/>"
+                + "<a:p><a:pPr><a:defRPr sz=\"" + fontSize100 + "\"/></a:pPr></a:p></c:txPr>"
+                + "</c:legend>";
         }
 
         // ---- barDir & grouping ----
-        String barDir   = chartConfig.isBarChart() ? "bar" : "col";
-        String grouping = chartConfig.isStacked() ? "stacked" : "clustered";
+        String barDir = chartConfig.isBarChart() ? "bar" : "col";
+        ChartConfig.BarGrouping barGrouping = chartConfig.getBarGrouping();
+        String grouping;
+        switch (barGrouping) {
+            case STACKED:         grouping = "stacked";        break;
+            case PERCENT_STACKED: grouping = "percentStacked"; break;
+            default:              grouping = "clustered";      break;
+        }
+        // 堆积类型需要 overlap=100 才能让柱子完全重叠（簇状不需要）
+        String overlapXml = (barGrouping == ChartConfig.BarGrouping.STACKED
+                || barGrouping == ChartConfig.BarGrouping.PERCENT_STACKED)
+                ? "<c:overlap val=\"100\"/>" : "";
 
         // ---- 组装完整 chartSpace XML（严格按 OOXML Schema 元素顺序） ----
         String chartSpaceXml =
@@ -1168,6 +1203,7 @@ public class ExcelExportUtils {
             + "<c:barChart>"
             + "<c:barDir val=\"" + barDir + "\"/>"
             + "<c:grouping val=\"" + grouping + "\"/>"
+            + overlapXml
             + "<c:varyColors val=\"0\"/>"
             + seriesXml
             + "<c:axId val=\"1\"/>"
@@ -1201,7 +1237,11 @@ public class ExcelExportUtils {
             + "<c:axPos val=\"l\"/>"
             + valAxisTitleXml
             + "<c:numFmt formatCode=\"General\" sourceLinked=\"1\"/>"
+            + majorGridlinesXml
             + "<c:tickLblPos val=\"nextTo\"/>"
+            // Y轴标签字体
+            + "<c:txPr><a:bodyPr/><a:lstStyle/>"
+            + "<a:p><a:pPr><a:defRPr sz=\"" + fontSize100 + "\"/></a:pPr></a:p></c:txPr>"
             + "<c:crossAx val=\"1\"/>"
             + "<c:crosses val=\"autoZero\"/>"
             + "<c:crossBetween val=\"between\"/>"

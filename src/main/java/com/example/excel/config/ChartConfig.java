@@ -43,6 +43,14 @@ public class ChartConfig {
      */
     private int gapRows = 2;
 
+    // ==================== 字体设置 ====================
+
+    /**
+     * 图表字体大小（磅数），默认 10
+     * <p>应用于标题、坐标轴标题、坐标轴标签、图例等</p>
+     */
+    private int fontSize = 10;
+
     // ==================== 数据绑定 ====================
 
     /**
@@ -76,9 +84,29 @@ public class ChartConfig {
     private boolean barChart = false;
 
     /**
-     * 是否堆叠柱图，默认 false
+     * 柱图分组方式，默认簇状（CLUSTERED）
+     * <ul>
+     *   <li>{@link BarGrouping#CLUSTERED}       — 簇状柱图（默认）</li>
+     *   <li>{@link BarGrouping#STACKED}         — 堆积柱图</li>
+     *   <li>{@link BarGrouping#PERCENT_STACKED} — 百分比堆积柱图</li>
+     * </ul>
      */
-    private boolean stacked = false;
+    private BarGrouping barGrouping = BarGrouping.CLUSTERED;
+
+    /**
+     * @deprecated 请改用 {@link #setBarGrouping(BarGrouping)}，此字段仅保留向后兼容
+     */
+    @Deprecated
+    public ChartConfig setStacked(boolean stacked) {
+        this.barGrouping = stacked ? BarGrouping.STACKED : BarGrouping.CLUSTERED;
+        return this;
+    }
+
+    /** @deprecated 请使用 {@link #getBarGrouping()} 判断 */
+    @Deprecated
+    public boolean isStacked() {
+        return barGrouping == BarGrouping.STACKED || barGrouping == BarGrouping.PERCENT_STACKED;
+    }
 
     /**
      * 是否显示数据标签（柱子上方显示数值），默认 true
@@ -95,6 +123,19 @@ public class ChartConfig {
      * <p>按 seriesList 顺序对应，不设置则使用 POI 默认配色</p>
      */
     private List<String> seriesColors = new ArrayList<>();
+
+    // ==================== 网格线设置 ====================
+
+    /**
+     * 是否显示主要网格线（Y 轴水平网格线），默认 true
+     */
+    private boolean showMajorGridlines = true;
+
+    /**
+     * 主要网格线颜色（十六进制，如 "D9D9D9"），默认浅灰
+     * <p>设为 null 则使用 Excel 默认颜色</p>
+     */
+    private String majorGridlineColor = "D9D9D9";
 
     // ==================== 坐标轴设置 ====================
 
@@ -130,6 +171,18 @@ public class ChartConfig {
     private Double valueAxisUnit = null;
 
     // ==================== 内部枚举 ====================
+
+    /**
+     * 柱图分组方式枚举
+     */
+    public enum BarGrouping {
+        /** 簇状柱图（默认） */
+        CLUSTERED,
+        /** 堆积柱图 */
+        STACKED,
+        /** 百分比堆积柱图 */
+        PERCENT_STACKED
+    }
 
     /**
      * 图例位置枚举
