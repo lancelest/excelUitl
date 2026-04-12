@@ -8,7 +8,6 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.*;
 
-
 import java.io.OutputStream;
 import java.io.IOException;
 import java.net.URLEncoder;
@@ -33,7 +32,7 @@ import java.util.*;
  * 5. 多级表头、条件样式、柱状图等企业级功能
  *
  * @author Excel Export Tool
- * @version 4.0.0
+ * @version 4.0.4
  */
 public class ExcelExportUtils {
 
@@ -52,6 +51,12 @@ public class ExcelExportUtils {
      * 避免每行每列都重复调用 clazz.getMethod()，对字段多的实体类性能提升显著
      */
     private static final Map<String, Method> METHOD_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Field 缓存：key = "全限定类名#fieldName"，value = Field 对象
+     * 用于无 getter 时的反射降级方案，避免重复调用 getDeclaredField()
+     */
+    private static final Map<String, Field> FIELD_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
 
     // ==================== 公共API方法 ====================
 
@@ -205,7 +210,7 @@ public class ExcelExportUtils {
 
                 // chartXmlMap: key=ZIP条目路径(如"xl/charts/chart1.xml"), value=完整XML字符串
             // buildChart 返回已构建好的 chartSpaceXml，由 fixChartXmlInZip 做最终替换
-            Map<String, String> chartXmlMap = new java.util.LinkedHashMap<>();
+            Map<String, String> chartXmlMap = new LinkedHashMap<>();
             for (int i = 0; i < sheetConfigs.size(); i++) {
                 SheetConfig<?> config = sheetConfigs.get(i);
                 try {
@@ -549,7 +554,6 @@ public class ExcelExportUtils {
             // 实体类：优先尝试getter方法，结果缓存到 METHOD_CACHE 避免重复查找
             Class<?> clazz = data.getClass();
             String cacheKeyGet = clazz.getName() + "#get" + capitalize(fieldName);
-            String cacheKeyIs  = clazz.getName() + "#is"  + capitalize(fieldName);
 
             Method method = METHOD_CACHE.get(cacheKeyGet);
             if (method == null) {
@@ -585,11 +589,6 @@ public class ExcelExportUtils {
                 "FIELD_ACCESS_ERROR", e);
         }
     }
-
-    /**
-     * Field 缓存：key = "全限定类名#fieldName"，value = Field 对象
-     */
-    private static final Map<String, Field> FIELD_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * 通过反射获取字段值（无 getter 时的降级方案）
@@ -1024,7 +1023,7 @@ public class ExcelExportUtils {
         XSSFChart        xssfChart = drawing.createChart(anchor);
 
         // ---- 构建参数 ----
-        String sheetName    = escapeXmlAttr(sheet.getSheetName());
+        String sheetName    = escapeXml(sheet.getSheetName());
         int    dataFirstRow = headerRows + 1;          // 1-based
         int    dataLastRow  = lastDataRow + 1;          // 1-based
 
@@ -1304,18 +1303,6 @@ public class ExcelExportUtils {
     }
 
     /**
-     * 十六进制颜色字符串转 byte 数组（RGB），如 "FF0000" → {-1, 0, 0}
-     */
-    private static byte[] hexToBytes(String hex) {
-        if (hex == null || hex.length() < 6) return new byte[]{0, 0, 0};
-        return new byte[]{
-            (byte) Integer.parseInt(hex.substring(0, 2), 16),
-            (byte) Integer.parseInt(hex.substring(2, 4), 16),
-            (byte) Integer.parseInt(hex.substring(4, 6), 16)
-        };
-    }
-
-    /**
      * 修复 POI 生成的 xlsx ZIP 包里的图表问题。
      * <p>
      * 问题一：chart*.xml 由 POI 序列化时命名空间声明丢失，导致 Excel 无法解析。<br>
@@ -1386,14 +1373,6 @@ public class ExcelExportUtils {
                 .replace("'", "&apos;");
     }
 
-    /**
-     * XML 属性值转义（用于 sheetName 等放进属性值的场景，同 escapeXml）
-     */
-    private static String escapeXmlAttr(String s) {
-        return escapeXml(s);
-    }
-
-    
     private static String capitalize(String str) {
         if (StringUtils.isBlank(str)) {
             return str;

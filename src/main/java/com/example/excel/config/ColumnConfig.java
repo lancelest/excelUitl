@@ -4,9 +4,15 @@ import lombok.Data;
 import lombok.experimental.Accessors;
 
 /**
- * 列配置类
- * 用于定义Excel中每一列的属性和样式
- * 
+ * 列配置类，定义 Excel 中每一列的字段映射、宽度、样式、数据转换规则。
+ *
+ * <p><b>核心字段关系：</b></p>
+ * <ul>
+ *   <li>{@code fieldName} — 绑定数据源字段（实体类属性名或 Map 的 key）</li>
+ *   <li>{@code styleConfig} — 静态样式；{@code styleProvider} — 动态样式（优先级更高）</li>
+ *   <li>{@code dataConverter} — 数据转换，在写入单元格前执行</li>
+ * </ul>
+ *
  * @author Excel Export Tool
  * @version 2.0.0
  */
@@ -14,28 +20,28 @@ import lombok.experimental.Accessors;
 @Accessors(chain = true)
 public class ColumnConfig {
 
-    // 字段名称（对应数据源中的字段，支持实体类字段或Map的key）
+    /** 字段名，对应实体类属性名或 Map 的 key */
     private String fieldName;
 
-    // 列宽（单位：字符数，实际宽度 = 字符数 * 256）
+    /** 列宽（字符数），实际像素宽度 = 字符数 × 256，默认 20 */
     private int width = 20;
 
-    // 单元格样式配置
+    /** 列静态样式配置，优先级低于 StyleProvider */
     private CellStyleConfig styleConfig;
 
-    // 数字格式（如：#,##0.00、0.00%、0.00E+00等）
+    /** 数字格式，如 {@code #,##0.00}、{@code 0.00%}、{@code 0.00E+00} */
     private String numberFormat;
 
-    // 日期格式（如：yyyy-MM-dd HH:mm:ss）
+    /** 日期格式，如 {@code yyyy-MM-dd HH:mm:ss} */
     private String dateFormat;
 
-    // 是否隐藏该列
+    /** 是否隐藏该列 */
     private boolean hidden = false;
 
-    // 数据转换器（用于自定义数据转换）
+    /** 数据转换器，在值写入单元格前执行自定义转换 */
     private DataConverter dataConverter;
 
-    // 动态样式提供器（优先级高于 styleConfig，为 null 时退回使用 styleConfig）
+    /** 动态样式提供器，优先级高于 styleConfig，为 null 时退回使用 styleConfig */
     private StyleProvider styleProvider;
 
     /**
